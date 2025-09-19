@@ -32,14 +32,14 @@ class DataLoader:
             Dict[str, Path]: ファイル種別をキーとしたパスの辞書
         """
         return {
-            "shortage_data": self.data_dir / "出荷不足20250915.xlsx",
+            "shortage_data": self.data_dir / "出荷不足20250919.xlsx",
             "product_master": self.data_dir / "製品マスタ.xlsx",
             "inspector_master": self.data_dir / "検査員マスタ.csv",
             "calendar": self.data_dir / "カレンダー.csv",
             "skill_master": self.data_dir / "スキルマスタ.csv",
         }
 
-    def load_shortage_data(self, filename: str = "出荷不足20250915.xlsx") -> Optional[pd.DataFrame]:
+    def load_shortage_data(self, filename: str = "出荷不足20250919.xlsx") -> Optional[pd.DataFrame]:
         """
         出荷不足データを読み込む（ロット単位で処理）
         Args:
