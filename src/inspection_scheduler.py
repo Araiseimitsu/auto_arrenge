@@ -8,8 +8,8 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import logging
 
-from .data_loader import DataLoader
-from .date_calculator import DateCalculator
+from data_loader import DataLoader
+from date_calculator import DateCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -380,6 +380,9 @@ class InspectionScheduler:
         # 検査員のステータスを初期化（名前と利用可能時間）
         initial_inspectors = inspectors[name_col].dropna().astype(str).tolist()
         inspectors_status = [{'name': name, 'available_time': avg_working_hours} for name in initial_inspectors]
+        
+        # 新製品チームメンバーを取得
+        new_product_team_members = self.get_new_product_team_members()
 
         products = self.scheduled_products.copy()
         
@@ -456,22 +459,47 @@ class InspectionScheduler:
         for _, row in products.iterrows():
             task_time = float(row.get('総検査時間', 0) or 0)
             required = int(row.get('必要人数', 0))
+            product_code = row.get('品番', '')
             
             assigned_names = []
             assigned_count = 0
+            is_new_product = False
 
             if task_time > 0:
+                # 新製品チーム判定
+                is_new_product = self.is_unregistered_product(product_code)
+                
                 # 検査員を利用可能時間が多い順にソート（割当の安定化のため）
                 inspectors_status.sort(key=lambda x: x['available_time'], reverse=True)
 
                 if required == 1:
-                    # 1人で可能なタスク：タスク時間以上の空きがある検査員を探す
-                    for inspector in inspectors_status:
-                        if inspector['available_time'] >= task_time:
-                            assigned_names.append(inspector['name'])
-                            inspector['available_time'] -= task_time
-                            assigned_count = 1
-                            break
+                    # 1人で可能なタスク
+                    if is_new_product:
+                        # 新製品の場合は新製品チームメンバーのみを割り当て
+                        if new_product_team_members:
+                            logger.info(f"新製品 {product_code} に新製品チームメンバーを割り当て")
+                            for inspector in inspectors_status:
+                                if (inspector['name'] in new_product_team_members and 
+                                    inspector['available_time'] >= task_time):
+                                    assigned_names.append(inspector['name'])
+                                    inspector['available_time'] -= task_time
+                                    assigned_count = 1
+                                    logger.info(f"新製品チームメンバー {inspector['name']} を {product_code} に割り当て")
+                                    break
+                            
+                            # 新製品チームメンバーが見つからない場合はログ出力のみ
+                            if assigned_count == 0:
+                                logger.warning(f"新製品 {product_code} に割り当て可能な新製品チームメンバーが見つかりません")
+                        else:
+                            logger.warning(f"新製品 {product_code} の処理が必要ですが、新製品チームメンバーが登録されていません")
+                    else:
+                        # 通常製品の場合は全検査員から割り当て
+                        for inspector in inspectors_status:
+                            if inspector['available_time'] >= task_time:
+                                assigned_names.append(inspector['name'])
+                                inspector['available_time'] -= task_time
+                                assigned_count = 1
+                                break
                 else:
                     # 複数人必要なタスク：1日(avg_working_hours)作業できる人を必要人数分探す
                     eligible_inspectors = [i for i in inspectors_status if i['available_time'] >= avg_working_hours]
@@ -481,14 +509,34 @@ class InspectionScheduler:
                     required_by_volume = max(1, ceil(task_time / max(avg_working_hours, 0.1)))
                     effective_required = min(required, required_by_volume)
 
-                    # 確保できる人数分だけ割り当てる
-                    assignable_count = min(effective_required, len(eligible_inspectors))
-                    if assignable_count > 0:
-                        assigned_inspectors = eligible_inspectors[:assignable_count]
-                        assigned_names = [i['name'] for i in assigned_inspectors]
-                        for inspector in assigned_inspectors:
-                            inspector['available_time'] -= avg_working_hours
-                        assigned_count = assignable_count
+                    # 新製品の場合は新製品チームメンバーのみを割り当て
+                    if is_new_product:
+                        if new_product_team_members:
+                            logger.info(f"新製品 {product_code} に新製品チームメンバーを割り当て（必要人数: {effective_required}人）")
+                            new_product_eligible = [i for i in eligible_inspectors if i['name'] in new_product_team_members]
+                            priority_count = min(effective_required, len(new_product_eligible))
+                            if priority_count > 0:
+                                assigned_inspectors = new_product_eligible[:priority_count]
+                                assigned_names = [i['name'] for i in assigned_inspectors]
+                                for inspector in assigned_inspectors:
+                                    inspector['available_time'] -= avg_working_hours
+                                assigned_count = priority_count
+                                logger.info(f"新製品チームメンバー {len(assigned_inspectors)}名を {product_code} に割り当て")
+                            
+                            # 新製品チームメンバーだけでは人数が足りない場合の警告
+                            if assigned_count < effective_required:
+                                logger.warning(f"新製品 {product_code} に必要な人数（{effective_required}人）に対し、割り当て可能な新製品チームメンバーが{assigned_count}人しかいません")
+                        else:
+                            logger.warning(f"新製品 {product_code} の処理が必要ですが、新製品チームメンバーが登録されていません")
+                    else:
+                        # 通常製品の場合は全検査員から割り当て
+                        assignable_count = min(effective_required, len(eligible_inspectors))
+                        if assignable_count > 0:
+                            assigned_inspectors = eligible_inspectors[:assignable_count]
+                            assigned_names = [i['name'] for i in assigned_inspectors]
+                            for inspector in assigned_inspectors:
+                                inspector['available_time'] -= avg_working_hours
+                            assigned_count = assignable_count
 
             item = {
                 '品番': row.get('品番'),
@@ -498,8 +546,64 @@ class InspectionScheduler:
                 '必要人数': required,
                 '割当人数': assigned_count,
                 '不足人員': max((int(max(1, __import__("math").ceil(task_time / max(avg_working_hours, 0.1)))) if required > 1 else required) - assigned_count, 0),
-                '割当メンバー': ','.join(assigned_names) if assigned_names else ''
+                '割当メンバー': ','.join(assigned_names) if assigned_names else '',
+                '新製品': '★' if is_new_product else ''
             }
             results.append(item)
 
         return pd.DataFrame(results)
+
+    def get_new_product_team_members(self) -> List[str]:
+        """
+        検査員マスタから新製品チームメンバーを取得
+        Returns:
+            List[str]: 新製品チームメンバーの氏名リスト
+        """
+        if self.inspector_master is None or self.inspector_master.empty:
+            logger.warning("検査員マスタが読み込まれていません")
+            return []
+        
+        # 新製品チーム列（H列）に★マークがあるメンバーを抽出
+        new_product_column = '新製品チーム'
+        name_column = '氏名'
+        
+        if new_product_column not in self.inspector_master.columns:
+            logger.warning(f"'{new_product_column}'列が検査員マスタに存在しません")
+            return []
+        
+        if name_column not in self.inspector_master.columns:
+            logger.warning(f"'{name_column}'列が検査員マスタに存在しません")
+            return []
+        
+        # ★マークがあるメンバーを抽出
+        new_product_members = self.inspector_master[
+            self.inspector_master[new_product_column] == '★'
+        ][name_column].dropna().astype(str).tolist()
+        
+        logger.info(f"新製品チームメンバー: {len(new_product_members)}名 - {new_product_members}")
+        return new_product_members
+    
+    def is_unregistered_product(self, product_code: str) -> bool:
+        """
+        製品マスタに未登録の品番かどうかを判定
+        Args:
+            product_code: 品番
+        Returns:
+            bool: 未登録の場合True
+        """
+        if self.product_master is None or self.product_master.empty:
+            logger.warning("製品マスタが読み込まれていません")
+            return True
+        
+        product_code_column = '品番'
+        if product_code_column not in self.product_master.columns:
+            logger.warning(f"'{product_code_column}'列が製品マスタに存在しません")
+            return True
+        
+        # 品番が製品マスタに存在するかチェック
+        is_registered = product_code in self.product_master[product_code_column].values
+        
+        if not is_registered:
+            logger.info(f"未登録品番を検出: {product_code}")
+        
+        return not is_registered

@@ -48,6 +48,27 @@ def main():
             if '納期' in display_df.columns:
                 display_df['納期'] = pd.to_datetime(display_df['納期'], errors='coerce').dt.strftime('%m/%d')
             print(display_df.to_string(index=False))
+            
+            # 新製品対応の統計情報を表示
+            if '新製品' in assignment_df.columns:
+                new_product_count = len(assignment_df[assignment_df['新製品'] == '★'])
+                total_count = len(assignment_df)
+                print(f"\n新製品対応統計:")
+                print(f"  新製品件数: {new_product_count}件 / 全体: {total_count}件")
+                if new_product_count > 0:
+                    new_product_df = assignment_df[assignment_df['新製品'] == '★']
+                    assigned_new_products = len(new_product_df[new_product_df['割当人数'] > 0])
+                    print(f"  新製品割当済: {assigned_new_products}件 / 新製品: {new_product_count}件")
+                    
+                    # 新製品チームメンバーが割り当てられた件数
+                    new_team_members = scheduler.get_new_product_team_members()
+                    if new_team_members:
+                        new_team_assigned = 0
+                        for _, row in new_product_df.iterrows():
+                            assigned_members = str(row.get('割当メンバー', '')).split(',')
+                            if any(member.strip() in new_team_members for member in assigned_members if member.strip()):
+                                new_team_assigned += 1
+                        print(f"  新製品チーム対応: {new_team_assigned}件 / 新製品: {new_product_count}件")
 
             # CSV保存
             formatter.save_to_csv(assignment_df, '検査員割当結果.csv', timestamp=True, decimals=2)
@@ -89,6 +110,27 @@ def run_analysis_with_date(target_date: str = None):
         if '納期' in display_df.columns:
             display_df['納期'] = pd.to_datetime(display_df['納期'], errors='coerce').dt.strftime('%m/%d')
         print(display_df.to_string(index=False))
+        
+        # 新製品対応の統計情報を表示
+        if '新製品' in assignment_df.columns:
+            new_product_count = len(assignment_df[assignment_df['新製品'] == '★'])
+            total_count = len(assignment_df)
+            print(f"\n新製品対応統計:")
+            print(f"  新製品件数: {new_product_count}件 / 全体: {total_count}件")
+            if new_product_count > 0:
+                new_product_df = assignment_df[assignment_df['新製品'] == '★']
+                assigned_new_products = len(new_product_df[new_product_df['割当人数'] > 0])
+                print(f"  新製品割当済: {assigned_new_products}件 / 新製品: {new_product_count}件")
+                
+                # 新製品チームメンバーが割り当てられた件数
+                new_team_members = scheduler.get_new_product_team_members()
+                if new_team_members:
+                    new_team_assigned = 0
+                    for _, row in new_product_df.iterrows():
+                        assigned_members = str(row.get('割当メンバー', '')).split(',')
+                        if any(member.strip() in new_team_members for member in assigned_members if member.strip()):
+                            new_team_assigned += 1
+                    print(f"  新製品チーム対応: {new_team_assigned}件 / 新製品: {new_product_count}件")
 
         # CSV保存
         formatter.save_to_csv(assignment_df, '検査員割当結果.csv', timestamp=True, decimals=2)
