@@ -57,10 +57,10 @@ class DataLoader:
             # 列名を標準化
             df.columns = df.columns.astype(str)
 
-            # 必要な列を取得 A=納期、B=品番、E=出荷数、H=不足数、I=生産ロットID、J=ロット数量、N=現在工程番号
-            if len(df.columns) >= 14:
-                shortage_data = df.iloc[:, [0, 1, 4, 7, 8, 9, 13]].copy()  # A, B, E, H, I, J, N列
-                shortage_data.columns = ['納期', '品番', '出荷数', '不足数', '生産ロットID', 'ロット数量', '工程番号']
+            # 必要な列を取得 A=納期、B=品番、E=出荷数、H=不足数、I=生産ロットID、J=ロット数量（工程番号は製品マスタから取得）
+            if len(df.columns) >= 10:
+                shortage_data = df.iloc[:, [0, 1, 4, 7, 8, 9]].copy()  # A, B, E, H, I, J列
+                shortage_data.columns = ['納期', '品番', '出荷数', '不足数', '生産ロットID', 'ロット数量']
 
                 # データクリーニング
                 shortage_data = shortage_data.dropna(subset=['品番'])
@@ -70,14 +70,8 @@ class DataLoader:
                 shortage_data['出荷数'] = pd.to_numeric(shortage_data['出荷数'], errors='coerce')
                 shortage_data['不足数'] = pd.to_numeric(shortage_data['不足数'], errors='coerce')
                 shortage_data['ロット数量'] = pd.to_numeric(shortage_data['ロット数量'], errors='coerce')
-                # 工程番号: 数値→整数(Int64)に統一（NaNは0）
-                shortage_data['工程番号'] = (
-                    pd.to_numeric(shortage_data['工程番号'], errors='coerce')
-                      .fillna(0)
-                      .astype('Int64')
-                )
 
-                # 同じ品番・工程番号・納期の組み合わせごとにグループ化して必要ロット数を計算
+                # 同じ品番・納期の組み合わせごとにグループ化して必要ロット数を計算
                 processed_data = self._process_lot_requirements(shortage_data)
 
                 logger.info(f"出荷不足データを読み込みました: {len(processed_data)}件")
@@ -100,8 +94,8 @@ class DataLoader:
         """
         result_list = []
 
-        # 品番・工程番号・納期でグループ化（全て別製品として扱う）
-        for (due_date, product_code, process_no), group in shortage_data.groupby(['納期', '品番', '工程番号']):
+        # 品番・納期でグループ化（全て別製品として扱う）
+        for (due_date, product_code), group in shortage_data.groupby(['納期', '品番']):
             if pd.isna(due_date) or pd.isna(product_code):
                 continue
 
@@ -117,12 +111,12 @@ class DataLoader:
             
             # 不足数の処理（マイナス値も含めて処理）
             if actual_shortage == 0:
-                logger.info(f"品番 {product_code} 工程 {process_no} 納期 {due_date}: 不足数が0のため検査対象外")
+                logger.info(f"品番 {product_code} 納期 {due_date}: 不足数が0のため検査対象外")
                 continue
             
             # マイナス値の場合は絶対値を使用（不足している数量として扱う）
             if actual_shortage < 0:
-                logger.info(f"品番 {product_code} 工程 {process_no} 納期 {due_date}: 不足数 {actual_shortage} を絶対値 {abs(actual_shortage)} として処理")
+                logger.info(f"品番 {product_code} 納期 {due_date}: 不足数 {actual_shortage} を絶対値 {abs(actual_shortage)} として処理")
                 total_shortage = abs(actual_shortage)
             else:
                 total_shortage = actual_shortage
@@ -157,7 +151,6 @@ class DataLoader:
             result_list.append({
                 '納期': due_date,
                 '品番': product_code,  # 品番をそのまま使用
-                '工程番号': process_no,
                 '出荷予定数': total_shipment,
                 '不足数': total_shortage,
                 '必要ロット数': required_lot_count,
@@ -350,6 +343,86 @@ class DataLoader:
         inspector_master = self.load_inspector_master()
 
         return shortage_data, product_master, inspector_master
+
+    def get_process_and_inspection_time(self, shortage_data: pd.DataFrame, product_master: pd.DataFrame) -> pd.DataFrame:
+        """
+        出荷不足データと製品マスタを結合し、納期・品番をキーとして工程番号と検査時間を取得
+        Args:
+            shortage_data: 出荷不足データ（納期、品番を含む）
+            product_master: 製品マスタ（品番、工程番号、検査時間を含む）
+        Returns:
+            DataFrame: 工程番号と検査時間が追加された出荷不足データ
+        """
+        if shortage_data is None or product_master is None:
+            logger.error("データが不正です")
+            return None
+            
+        if shortage_data.empty:
+            logger.info("出荷不足データが空です")
+            return shortage_data
+            
+        try:
+            # 出荷不足データをコピー
+            result_data = shortage_data.copy()
+            
+            # 製品マスタから品番ごとの工程番号と検査時間を取得
+            # 同じ品番で複数の工程がある場合は全て取得
+            merged_data = pd.merge(
+                result_data,
+                product_master[['品番', '工程番号', '検査時間']],
+                on='品番',
+                how='left'
+            )
+            
+            # マージ結果の確認
+            total_rows = len(merged_data)
+            matched_rows = len(merged_data.dropna(subset=['工程番号', '検査時間']))
+            
+            logger.info(f"製品マスタとの結合結果: 全{total_rows}行中{matched_rows}行でマッチ")
+            
+            if matched_rows == 0:
+                logger.warning("製品マスタとマッチする品番がありません")
+                # 工程番号と検査時間の列を追加（NaN値で）
+                result_data['工程番号'] = None
+                result_data['検査時間'] = None
+                return result_data
+            
+            # マッチしなかった品番をログ出力
+            unmatched_data = merged_data[merged_data['工程番号'].isna()]
+            if not unmatched_data.empty:
+                unmatched_products = unmatched_data['品番'].unique()
+                logger.warning(f"製品マスタに存在しない品番: {list(unmatched_products)[:10]}")
+            
+            # マッチしない場合のデフォルト値設定
+            # 工程番号はNaN、検査時間は15秒（0.0042時間）をデフォルト値として設定
+            DEFAULT_INSPECTION_TIME = 15 / 3600.0  # 15秒を時間に変換（0.0042時間）
+            
+            merged_data['工程番号'] = merged_data['工程番号'].fillna(pd.NA)
+            merged_data['検査時間'] = merged_data['検査時間'].fillna(DEFAULT_INSPECTION_TIME)
+            
+            # デフォルト値が使用された品番数をログ出力
+            default_used_count = len(merged_data[merged_data['検査時間'] == DEFAULT_INSPECTION_TIME])
+            if default_used_count > 0:
+                logger.info(f"製品マスタに存在しない品番{default_used_count}件にデフォルト検査時間15秒（0.0042時間）を設定しました")
+            
+            # 工程番号の型変換（「未登録」などの文字列をNaNに変換）
+            def convert_process_number(value):
+                if pd.isna(value) or value == '未登録' or str(value).strip() == '':
+                    return pd.NA
+                try:
+                    return pd.to_numeric(value, errors='coerce')
+                except:
+                    return pd.NA
+            
+            merged_data['工程番号'] = merged_data['工程番号'].apply(convert_process_number)
+            
+            return merged_data
+            
+        except Exception as e:
+            logger.error(f"工程番号・検査時間取得エラー: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
 
     def validate_data(self, shortage_data: pd.DataFrame, product_master: pd.DataFrame) -> bool:
         """

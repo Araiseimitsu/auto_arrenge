@@ -67,10 +67,17 @@ class InspectionScheduler:
 
         logger.info("検査スケジュール計算を開始します")
 
-        # 時間計算を追加
-        self.scheduled_products = self.date_calculator.add_time_calculations(
+        # 製品マスタから工程番号と検査時間を取得
+        enriched_data = self.data_loader.get_process_and_inspection_time(
             self.shortage_data, self.product_master
         )
+        
+        if enriched_data is None or enriched_data.empty:
+            logger.error("工程番号・検査時間の取得に失敗しました")
+            return pd.DataFrame()
+
+        # 基本的な時間計算を実行
+        self.scheduled_products = self._calculate_basic_schedule(enriched_data)
 
         # データが空の場合の処理
         if self.scheduled_products.empty:
@@ -154,6 +161,55 @@ class InspectionScheduler:
         }
 
         return capacity_analysis
+
+    def _calculate_basic_schedule(self, enriched_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        基本的なスケジュール計算を実行
+        Args:
+            enriched_data: 工程番号と検査時間が追加されたデータ
+        Returns:
+            DataFrame: スケジュール計算結果
+        """
+        if enriched_data.empty:
+            logger.warning("計算対象データが空です")
+            return pd.DataFrame()
+        
+        result_df = enriched_data.copy()
+        
+        # 検査時間がNaNの場合はデフォルト値を設定
+        result_df['検査時間'] = result_df['検査時間'].fillna(2.0)
+        
+        # 総検査時間の計算（不足数の絶対値 × 検査時間）
+        if '不足数' in result_df.columns:
+            result_df['実生産数量'] = pd.to_numeric(result_df['不足数'], errors='coerce').fillna(0).abs()
+            result_df['総検査時間'] = result_df['実生産数量'] * result_df['検査時間']
+        else:
+            logger.warning("不足数列が見つかりません")
+            result_df['実生産数量'] = 0
+            result_df['総検査時間'] = 0
+        
+        # 検査開始期限を計算
+        result_df['検査開始期限'] = result_df.apply(
+            lambda row: self.date_calculator.calculate_inspection_deadline(row['納期'], row['総検査時間'])
+            if pd.notna(row['納期']) else None,
+            axis=1
+        )
+        
+        # 緊急度レベルを計算
+        result_df['緊急度レベル'] = result_df['検査開始期限'].apply(
+            lambda x: self.date_calculator.calculate_urgency_level(x) if pd.notna(x) else 4
+        )
+        
+        # 緊急度説明を追加
+        result_df['緊急度'] = result_df['緊急度レベル'].apply(self.date_calculator.get_urgency_description)
+        
+        # 期限までの日数を追加
+        result_df['期限までの日数'] = result_df['検査開始期限'].apply(
+            lambda x: (x - self.date_calculator.base_date).days if pd.notna(x) else 999
+        )
+        
+        logger.info(f"スケジュール計算が完了しました: {len(result_df)}件")
+        return result_df
 
     def _calculate_working_hours(self, start_time: str, end_time: str) -> float:
         """
