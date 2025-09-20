@@ -168,6 +168,99 @@ class OutputFormatter:
             logger.error(f"CSV保存エラー: {e}")
             return ""
 
+    # 追加: 作業員別の割当時間シートを含むExcelレポート保存
+    def save_assignment_report_excel(self, assignment_df: pd.DataFrame, filename: str = '検査員割当レポート.xlsx', timestamp: bool = True, decimals: int = 2) -> str:
+        """
+        割当結果からExcelレポートを作成し、
+        - タスク別割当（元データ）
+        - 作業員別割当時間（集計）
+        のシートを出力する
+
+        Args:
+            assignment_df: 検査員割当結果のDataFrame（列: 品番, 工程番号, 納期, 総検査時間, 割当人数, 割当メンバー, など）
+            filename: 出力するExcelファイル名
+            timestamp: タイムスタンプ付与の有無
+            decimals: 時間の丸め桁数
+
+        Returns:
+            str: 保存されたExcelファイルのパス
+        """
+        try:
+            if assignment_df is None or assignment_df.empty:
+                logger.warning("assignment_df が空のため、Excelレポートを作成しませんでした")
+                return ""
+
+            # タイムスタンプ
+            if timestamp:
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                name, ext = filename.rsplit('.', 1)
+                filename = f"{name}_{timestamp_str}.{ext}"
+
+            file_path = self.output_dir / filename
+
+            # 作業員別の明細行を作成
+            rows = []
+            for _, row in assignment_df.iterrows():
+                try:
+                    task_time = pd.to_numeric(row.get('総検査時間', 0), errors='coerce')
+                except Exception:
+                    task_time = 0
+                members_raw = str(row.get('割当メンバー', '') or '')
+                members = [m.strip() for m in members_raw.split(',') if m.strip()]
+
+                if task_time is None or pd.isna(task_time) or task_time <= 0:
+                    continue
+                if not members:
+                    continue
+
+                assigned_count = len(members)
+                # 単純按分: 総検査時間を割当人数で等分
+                per_member_time = task_time if assigned_count == 1 else task_time / max(assigned_count, 1)
+
+                for mem in members:
+                    rows.append({
+                        '作業員': mem,
+                        '品番': row.get('品番', ''),
+                        '工程番号': row.get('工程番号', ''),
+                        '納期': row.get('納期', ''),
+                        '割当時間': per_member_time
+                    })
+
+            if not rows:
+                logger.warning("割当メンバーの明細が空でした。Excelレポートの作業員別シートは作成されません")
+                # タスク別シートのみ出力
+                with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                    assignment_df.to_excel(writer, index=False, sheet_name='タスク別割当')
+                logger.info(f"Excelファイルを保存しました: {file_path}")
+                return str(file_path)
+
+            detail_df = pd.DataFrame(rows)
+            # 丸め
+            detail_df['割当時間'] = pd.to_numeric(detail_df['割当時間'], errors='coerce').round(decimals)
+
+            # 作業員別の集計
+            summary_df = detail_df.groupby('作業員', as_index=False).agg(
+                割当タスク数=('作業員', 'count'),
+                合計割当時間=('割当時間', 'sum')
+            )
+            summary_df['平均割当時間'] = (summary_df['合計割当時間'] / summary_df['割当タスク数']).round(decimals)
+            summary_df['合計割当時間'] = summary_df['合計割当時間'].round(decimals)
+
+            # Excelへ出力
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                # 1. 元の割当結果
+                assignment_df.to_excel(writer, index=False, sheet_name='タスク別割当')
+                # 2. 作業員別集計
+                summary_df.to_excel(writer, index=False, sheet_name='作業員別割当時間')
+                # 3. 明細（参考）
+                detail_df.to_excel(writer, index=False, sheet_name='作業員-タスク明細')
+
+            logger.info(f"Excelレポートを保存しました: {file_path}")
+            return str(file_path)
+        except Exception as e:
+            logger.error(f"Excelレポート保存エラー: {e}")
+            return ""
+
     def generate_full_report(self, urgent_products: pd.DataFrame, summary: Dict, capacity: Dict) -> None:
         """
         完全レポートを生成・出力

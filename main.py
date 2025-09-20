@@ -86,6 +86,10 @@ def main():
 
             # CSV保存（可視化列も含めて保存）
             formatter.save_to_csv(assignment_df, '検査員割当結果.csv', timestamp=True, decimals=2)
+            # Excel保存（タスク別・作業員別シート含む）
+            excel_path = formatter.save_assignment_report_excel(assignment_df, '検査員割当レポート.xlsx', timestamp=True, decimals=2)
+            if excel_path:
+                print(f"Excelレポートを出力しました: {excel_path}")
         else:
             print("\n検査員割当結果: データがありません。")
 
@@ -135,6 +139,10 @@ def main():
 
             # CSV保存
             formatter.save_to_csv(skill_assignment_df, 'スキルベース検査員割当結果.csv', timestamp=True, decimals=2)
+            # Excel保存（タスク別・作業員別シート含む）
+            skill_excel_path = formatter.save_assignment_report_excel(skill_assignment_df, 'スキルベース検査員割当レポート.xlsx', timestamp=True, decimals=2)
+            if skill_excel_path:
+                print(f"Excelレポート（スキルベース）を出力しました: {skill_excel_path}")
         else:
             print("\nスキルベース検査員割当結果: データがありません。")
         
@@ -212,6 +220,10 @@ def run_analysis_with_date(target_date: str = None):
 
         # CSV保存（可視化列も含めて保存）
         formatter.save_to_csv(assignment_df, '検査員割当結果.csv', timestamp=True, decimals=2)
+        # Excel保存（タスク別・作業員別シート含む）
+        excel_path = formatter.save_assignment_report_excel(assignment_df, '検査員割当レポート.xlsx', timestamp=True, decimals=2)
+        if excel_path:
+            print(f"Excelレポートを出力しました: {excel_path}")
     else:
         print("\n検査員割当結果: データがありません。")
 
@@ -261,6 +273,10 @@ def run_analysis_with_date(target_date: str = None):
 
         # CSV保存
         formatter.save_to_csv(skill_assignment_df, 'スキルベース検査員割当結果.csv', timestamp=True, decimals=2)
+        # Excel保存（タスク別・作業員別シート含む）
+        skill_excel_path = formatter.save_assignment_report_excel(skill_assignment_df, 'スキルベース検査員割当レポート.xlsx', timestamp=True, decimals=2)
+        if skill_excel_path:
+            print(f"Excelレポート（スキルベース）を出力しました: {skill_excel_path}")
     else:
         print("\nスキルベース検査員割当結果: データがありません。")
 
