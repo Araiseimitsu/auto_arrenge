@@ -332,17 +332,67 @@ class DataLoader:
             logger.error(f"検査員マスタの読み込みエラー: {e}")
             return None
 
-    def load_all_data(self) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    def load_skill_master(self, filename: str = "スキルマスタ.csv") -> Optional[pd.DataFrame]:
+        """
+        スキルマスタデータを読み込む
+        Args:
+            filename: ファイル名
+        Returns:
+            DataFrame: 品番と各作業員のスキルレベル情報
+        """
+        file_path = self.file_paths.get("skill_master")
+        if not file_path or not file_path.exists():
+            logger.error(f"スキルマスタファイルが見つかりません: {file_path}")
+            return None
+
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8-sig')
+            
+            # 列名を確認してクリーニング
+            df.columns = df.columns.str.strip()
+            
+            # A列（品番）が存在することを確認
+            if len(df.columns) < 1:
+                logger.error("スキルマスタの列数が不足しています")
+                return None
+            
+            # 品番列（A列）を取得
+            skill_data = df.copy()
+            
+            # 品番列の名前を統一
+            skill_data.rename(columns={skill_data.columns[0]: '品番'}, inplace=True)
+            
+            # 品番のデータクリーニング
+            skill_data = skill_data.dropna(subset=['品番'])
+            skill_data['品番'] = skill_data['品番'].astype(str).str.strip()
+            
+            # 作業員列（C列以降）のスキルレベルを数値に変換
+            worker_columns = skill_data.columns[2:]  # C列以降（作業員列）
+            for col in worker_columns:
+                # スキルレベルを数値に変換（1:高、2:中、3:低、空:割り振らない）
+                skill_data[col] = pd.to_numeric(skill_data[col], errors='coerce')
+            
+            logger.info(f"スキルマスタを読み込みました: {len(skill_data)}件の品番、{len(worker_columns)}名の作業員")
+            return skill_data
+            
+        except Exception as e:
+            logger.error(f"スキルマスタの読み込みエラー: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    def load_all_data(self) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
         """
         全データファイルを読み込む
         Returns:
-            Tuple: (出荷不足データ, 製品マスタ, 検査員マスタ)
+            Tuple: (出荷不足データ, 製品マスタ, 検査員マスタ, スキルマスタ)
         """
         shortage_data = self.load_shortage_data()
         product_master = self.load_product_master()
         inspector_master = self.load_inspector_master()
+        skill_master = self.load_skill_master()
 
-        return shortage_data, product_master, inspector_master
+        return shortage_data, product_master, inspector_master, skill_master
 
     def get_process_and_inspection_time(self, shortage_data: pd.DataFrame, product_master: pd.DataFrame) -> pd.DataFrame:
         """

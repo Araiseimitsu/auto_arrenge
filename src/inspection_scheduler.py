@@ -31,6 +31,7 @@ class InspectionScheduler:
         self.shortage_data: Optional[pd.DataFrame] = None
         self.product_master: Optional[pd.DataFrame] = None
         self.inspector_master: Optional[pd.DataFrame] = None
+        self.skill_master: Optional[pd.DataFrame] = None
         self.scheduled_products: Optional[pd.DataFrame] = None
 
     def load_data(self) -> bool:
@@ -41,7 +42,7 @@ class InspectionScheduler:
         """
         logger.info("データ読み込みを開始します")
 
-        self.shortage_data, self.product_master, self.inspector_master = self.data_loader.load_all_data()
+        self.shortage_data, self.product_master, self.inspector_master, self.skill_master = self.data_loader.load_all_data()
 
         if self.shortage_data is None or self.product_master is None:
             logger.error("必須データの読み込みに失敗しました")
@@ -438,23 +439,14 @@ class InspectionScheduler:
         due_dates = pd.to_datetime(products['納期'], errors='coerce').dt.date
         products['due_date_diff'] = (due_dates - today).apply(lambda x: x.days if pd.notna(x) else 999)
         products['is_due_today'] = (due_dates == today)
-        # 本日分は「一人で処理可能」を先に処理する
-        products['priority_group'] = products.apply(
-            lambda r: 0 if r['is_due_today'] and r['必要人数'] == 1
-            else (1 if r['is_due_today'] and r['必要人数'] > 1
-            else (2 if (not r['is_due_today']) and r['必要人数'] > 1
-            else 3)),
-            axis=1
-        )
-
-        # 3. 優先順位に基づきソート
+        # 本日・複数人優先といったグルーピンングは行わず、納期の近さを最優先でソート
         products = products.sort_values(
-            by=['priority_group', 'due_date_diff', '総検査時間'],
-            ascending=[True, True, False],
+            by=['due_date_diff', '総検査時間'],
+            ascending=[True, False],
             na_position='last'
         ).reset_index(drop=True)
         
-        # --- 割当処理 ---
+        # スキルベース割当処理
         results = []
         for _, row in products.iterrows():
             task_time = float(row.get('総検査時間', 0) or 0)
@@ -607,3 +599,274 @@ class InspectionScheduler:
             logger.info(f"未登録品番を検出: {product_code}")
         
         return not is_registered
+
+    def assign_inspectors_with_skill(self) -> pd.DataFrame:
+        """
+        スキルマスタに基づいて検査員を製品に割り当てる
+        スキルレベル: 1（高）、2（中）、3（低）、空（割り振らない）
+        スキルレベル1から順に割り当てを行う
+        Returns:
+            DataFrame: スキルベース割当結果
+        """
+        if self.scheduled_products is None or self.scheduled_products.empty:
+            logger.error("スケジュール計算が実行されていません")
+            return pd.DataFrame()
+        if self.inspector_master is None or self.inspector_master.empty:
+            logger.error("検査員マスタが読み込まれていません")
+            return pd.DataFrame()
+        if self.skill_master is None or self.skill_master.empty:
+            logger.error("スキルマスタが読み込まれていません")
+            return pd.DataFrame()
+
+        logger.info("スキルベース検査員割り当てを開始します")
+        
+        # 検査員の基本情報を取得
+        inspectors = self.inspector_master.copy()
+        avg_working_hours = 8.0
+        
+        try:
+            if '開始時刻' in inspectors.columns and '終了時刻' in inspectors.columns:
+                inspectors['勤務時間'] = inspectors.apply(
+                    lambda row: self._calculate_working_hours(row['開始時刻'], row['終了時刻']), axis=1
+                )
+                if inspectors['勤務時間'].gt(0).any():
+                    avg_working_hours = inspectors['勤務時間'].mean()
+        except Exception as e:
+            logger.warning(f"検査員の勤務時間計算に失敗しました: {e}（既定 {avg_working_hours}h を使用）")
+
+        # 検査員名の列を特定
+        name_col = '氏名' if '氏名' in inspectors.columns else (inspectors.columns[0] if len(inspectors.columns) > 0 else None)
+        if not name_col:
+            logger.error("検査員名の列が特定できません")
+            return pd.DataFrame()
+        
+        # 検査員のステータスを初期化
+        initial_inspectors = inspectors[name_col].dropna().astype(str).tolist()
+        inspectors_status = [{'name': name, 'available_time': avg_working_hours} for name in initial_inspectors]
+        
+        products = self.scheduled_products.copy()
+        
+        # 必要人数を計算
+        from math import ceil
+        def calculate_required_people(total_inspection_time, due_date):
+            if not total_inspection_time or float(total_inspection_time) <= 0:
+                return 1
+            
+            inspection_time = float(total_inspection_time)
+            today = self.date_calculator.base_date.date()
+            
+            if isinstance(due_date, str):
+                due_date_obj = pd.to_datetime(due_date, errors='coerce')
+                if pd.isna(due_date_obj):
+                    days_until_due = 1
+                else:
+                    days_until_due = (due_date_obj.date() - today).days
+            else:
+                days_until_due = 1
+            
+            if days_until_due <= 0:
+                days_until_due = 1
+            
+            available_hours = days_until_due * max(avg_working_hours, 0.1)
+            required_people = ceil(inspection_time / available_hours)
+            
+            if required_people > 50:
+                required_people = 50
+            if required_people < 1:
+                required_people = 1
+            
+            return required_people
+
+        products['必要人数'] = products.apply(
+            lambda row: calculate_required_people(row['総検査時間'], row['納期']), axis=1
+        )
+
+        # 優先順位付け
+        today = self.date_calculator.base_date.date()
+        due_dates = pd.to_datetime(products['納期'], errors='coerce').dt.date
+        products['due_date_diff'] = (due_dates - today).apply(lambda x: x.days if pd.notna(x) else 999)
+        products['is_due_today'] = (due_dates == today)
+        # 納期の近さを最優先でソート（同一納期は総検査時間が長いものを先に）
+        products = products.sort_values(
+            by=['due_date_diff', '総検査時間'],
+            ascending=[True, False],
+            na_position='last'
+        ).reset_index(drop=True)
+        
+        # スキルベース割当処理
+        results = []
+        for _, row in products.iterrows():
+            task_time = float(row.get('総検査時間', 0) or 0)
+            required = int(row.get('必要人数', 0))
+            product_code = row.get('品番', '')
+            
+            assigned_names = []
+            assigned_count = 0
+            skill_info = ""
+
+            if task_time > 0 and product_code:
+                # スキルマスタから該当品番のスキル情報を取得
+                skilled_inspectors = self._get_skilled_inspectors_for_product(product_code)
+                
+                if skilled_inspectors:
+                    skill_info = f"スキル対応者: {len(skilled_inspectors)}名"
+                    logger.info(f"品番 {product_code} のスキル対応者: {skilled_inspectors}")
+                    
+                    # スキルレベル順（1→2→3）で検査員を割り当て
+                    for skill_level in [1, 2, 3]:
+                        if assigned_count >= required:
+                            break
+                            
+                        # 該当スキルレベルの検査員を取得
+                        level_inspectors = [info for info in skilled_inspectors if info['skill_level'] == skill_level]
+                        
+                        for inspector_info in level_inspectors:
+                            if assigned_count >= required:
+                                break
+                                
+                            inspector_id = inspector_info['name']
+                            
+                            # 検査員IDを実際の氏名にマッピング
+                            inspector_name = self._get_inspector_name_by_id(inspector_id)
+                            if not inspector_name:
+                                continue
+                            
+                            # 検査員の利用可能時間をチェック
+                            inspector_status = next((i for i in inspectors_status if i['name'] == inspector_name), None)
+                            if inspector_status and inspector_status['available_time'] >= (task_time if required == 1 else avg_working_hours):
+                                assigned_names.append(f"{inspector_name}(スキル{skill_level})")
+                                
+                                # 利用可能時間を減算
+                                if required == 1:
+                                    inspector_status['available_time'] -= task_time
+                                else:
+                                    inspector_status['available_time'] -= avg_working_hours
+                                    
+                                assigned_count += 1
+                                logger.info(f"品番 {product_code} にスキルレベル{skill_level}の {inspector_name}({inspector_id}) を割り当て")
+
+                    # スキル情報はあるが、割当が不足した場合は一般割当で補完
+                    if assigned_count < required:
+                        inspectors_status.sort(key=lambda x: x['available_time'], reverse=True)
+                        for inspector in inspectors_status:
+                            if assigned_count >= required:
+                                break
+                            required_time = task_time if required == 1 else avg_working_hours
+                            if inspector['available_time'] >= required_time:
+                                assigned_names.append(f"{inspector['name']}(一般)")
+                                inspector['available_time'] -= required_time
+                                assigned_count += 1
+                else:
+                    # スキル情報がない場合は通常の割り当て
+                    skill_info = "スキル情報なし"
+                    logger.warning(f"品番 {product_code} のスキル情報が見つかりません")
+                    
+                    # 利用可能時間が多い順にソート
+                    inspectors_status.sort(key=lambda x: x['available_time'], reverse=True)
+                    
+                    for inspector in inspectors_status:
+                        if assigned_count >= required:
+                            break
+                            
+                        required_time = task_time if required == 1 else avg_working_hours
+                        if inspector['available_time'] >= required_time:
+                            assigned_names.append(f"{inspector['name']}(一般)")
+                            inspector['available_time'] -= required_time
+                            assigned_count += 1
+
+            item = {
+                '品番': row.get('品番'),
+                '工程番号': row.get('工程番号'),
+                '納期': row.get('納期'),
+                '総検査時間': task_time,
+                '必要人数': required,
+                '割当人数': assigned_count,
+                '不足人員': max(required - assigned_count, 0),
+                '割当メンバー': ','.join(assigned_names) if assigned_names else '',
+                'スキル情報': skill_info
+            }
+            results.append(item)
+
+        logger.info(f"スキルベース検査員割り当てが完了しました: {len(results)}件")
+        return pd.DataFrame(results)
+
+    def _get_skilled_inspectors_for_product(self, product_code: str) -> List[Dict]:
+        """
+        指定品番に対応するスキルを持つ検査員を取得
+        Args:
+            product_code: 品番
+        Returns:
+            List[Dict]: スキル情報付き検査員リスト [{'name': '検査員名', 'skill_level': スキルレベル}]
+        """
+        if self.skill_master is None or self.skill_master.empty:
+            logger.warning(f"スキルマスタが空またはNoneです")
+            return []
+        
+        # スキルマスタの基本情報をログ出力
+        logger.info(f"スキルマスタ読み込み完了: {len(self.skill_master)}行")
+        
+        # 品番に対応する行を検索
+        product_row = self.skill_master[self.skill_master['品番'] == product_code]
+        
+        if product_row.empty:
+            logger.warning(f"スキルマスタに品番 {product_code} が見つかりません")
+            # 利用可能な品番の一部を表示
+            available_products = self.skill_master['品番'].unique()[:10]
+            logger.info(f"利用可能な品番の例: {list(available_products)}")
+            return []
+        
+        skilled_inspectors = []
+        
+        # 最初に見つかった行を使用
+        row = product_row.iloc[0]
+        
+        # 作業員列（C列以降）をチェック
+        for col in self.skill_master.columns[2:]:  # A列:品番, B列:工程をスキップ
+            skill_value = row[col]
+            
+            # スキルレベルが1, 2, 3のいずれかの場合
+            if pd.notna(skill_value):
+                try:
+                    skill_level = int(float(skill_value))
+                    if skill_level in [1, 2, 3]:
+                        skilled_inspectors.append({
+                            'name': col,
+                            'skill_level': skill_level
+                        })
+                        logger.info(f"検査員 {col} のスキルレベル {skill_level} を追加")
+                except (ValueError, TypeError):
+                    # 数値に変換できない場合はスキップ
+                    pass
+        
+        # スキルレベル順でソート（1が最優先）
+        skilled_inspectors.sort(key=lambda x: x['skill_level'])
+        
+        logger.info(f"品番 {product_code} のスキル対応者: {len(skilled_inspectors)}名")
+        return skilled_inspectors
+    
+    def _get_inspector_name_by_id(self, inspector_id: str) -> str:
+        """
+        検査員IDから実際の氏名を取得
+        Args:
+            inspector_id: 検査員ID（V002、V004など）
+        Returns:
+            str: 検査員の氏名（見つからない場合は空文字）
+        """
+        if self.inspector_master is None or self.inspector_master.empty:
+            return ""
+        
+        # 列名の候補を柔軟に対応（DataLoader側で#が除去されるケースに対応）
+        possible_id_cols = ['#ID', 'ID', '社員ID', 'InspectorID']
+        possible_name_cols = ['#氏名', '氏名', '名前', 'Name']
+        
+        id_col = next((c for c in possible_id_cols if c in self.inspector_master.columns), None)
+        name_col = next((c for c in possible_name_cols if c in self.inspector_master.columns), None)
+        
+        if not id_col or not name_col:
+            return ""
+        
+        inspector_row = self.inspector_master[self.inspector_master[id_col].astype(str) == str(inspector_id)]
+        if inspector_row.empty:
+            return ""
+        
+        return str(inspector_row.iloc[0][name_col])

@@ -36,10 +36,13 @@ graph TD
 
 ## 2. Technology Description
 
-- Frontend: None (コマンドライン/バッチ処理システム)
-- Backend: Python 3.8+ + pandas + openpyxl
-- Data Processing: pandas for CSV/Excel manipulation
-- Logging: Python標準ライブラリ logging
+* Frontend: None (コマンドライン/バッチ処理システム)
+
+* Backend: Python 3.8+ + pandas + openpyxl
+
+* Data Processing: pandas for CSV/Excel manipulation
+
+* Logging: Python標準ライブラリ logging
 
 ## 3. Route definitions
 
@@ -53,6 +56,7 @@ graph TD
 内部モジュール間のインターフェース定義
 
 #### DataLoader クラス
+
 ```python
 class DataLoader:
     def load_all_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
@@ -61,6 +65,7 @@ class DataLoader:
 ```
 
 #### InspectionScheduler クラス
+
 ```python
 class InspectionScheduler:
     def calculate_schedules() -> pd.DataFrame
@@ -70,6 +75,7 @@ class InspectionScheduler:
 ```
 
 #### 新製品チーム割り当て関数
+
 ```python
 def get_new_product_team_members(inspector_master: pd.DataFrame) -> List[str]:
     """
@@ -171,7 +177,8 @@ erDiagram
 
 ### 6.2 Data Definition Language
 
-#### 検査員マスタ (inspector_master.csv)
+#### 検査員マスタ (inspector\_master.csv)
+
 ```csv
 -- CSVファイル構造
 #ID,#氏名,所属グループ,開始時刻,終了時刻,曜日,残業可能時間,新製品チーム,休暇予定表の別名
@@ -179,7 +186,8 @@ V002,鈴木悦代,B,8:30,17:30,月火水木金,0,★,
 V004,新井登志子,B,8:30,17:30,月火水木金,0,★,
 ```
 
-#### 製品マスタ (product_master.xlsx)
+#### 製品マスタ (product\_master.xlsx)
+
 ```excel
 -- Excelファイル構造
 品番 | 製品名 | 工程番号 | 検査時間 | カテゴリ
@@ -187,7 +195,8 @@ ABC001 | 製品A | 100 | 2.5 | 標準品
 XYZ999 | 製品X | 200 | 4.0 | 特殊品
 ```
 
-#### 出荷不足データ (shortage_data.xlsx)
+#### 出荷不足データ (shortage\_data.xlsx)
+
 ```excel
 -- Excelファイル構造  
 品番 | 納期 | 不足数 | ステータス
@@ -196,6 +205,7 @@ NEW001 | 2024-01-20 | 50 | 新製品
 ```
 
 #### 新製品チーム判定ロジック
+
 ```python
 # 新製品チームメンバー抽出条件
 # 検査員マスタの「新製品チーム」列（H列、インデックス7）に「★」が入っているメンバー
@@ -211,3 +221,4 @@ for product in unregistered_products:
     else:
         assign_to_regular_team(product)
 ```
+

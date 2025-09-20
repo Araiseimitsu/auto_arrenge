@@ -43,7 +43,20 @@ def main():
         if not assignment_df.empty:
             print("\n検査員割当結果（納期が早い順）")
             print("-" * 60)
-            # 納期は表示用にMM/DDで
+
+            # 新製品チーム（検査員マスタ H列=『新製品チーム』で★）から最低1名が割り当てられているかを可視化
+            new_team_members = scheduler.get_new_product_team_members()
+            if new_team_members:
+                def _new_team_min1_flag(row):
+                    if str(row.get('新製品', '')) == '★':
+                        assigned_members = [m.strip() for m in str(row.get('割当メンバー', '')).split(',') if m.strip()]
+                        return 'OK' if any(m in new_team_members for m in assigned_members) else 'NG'
+                    return ''
+                assignment_df['新チーム最低割当'] = assignment_df.apply(_new_team_min1_flag, axis=1)
+            else:
+                assignment_df['新チーム最低割当'] = assignment_df['新製品'].apply(lambda v: '' if str(v) != '★' else 'NG')
+
+            # 表示用に納期はMM/DD
             display_df = assignment_df.copy()
             if '納期' in display_df.columns:
                 display_df['納期'] = pd.to_datetime(display_df['納期'], errors='coerce').dt.strftime('%m/%d')
@@ -60,20 +73,71 @@ def main():
                     assigned_new_products = len(new_product_df[new_product_df['割当人数'] > 0])
                     print(f"  新製品割当済: {assigned_new_products}件 / 新製品: {new_product_count}件")
                     
-                    # 新製品チームメンバーが割り当てられた件数
-                    new_team_members = scheduler.get_new_product_team_members()
-                    if new_team_members:
-                        new_team_assigned = 0
-                        for _, row in new_product_df.iterrows():
-                            assigned_members = str(row.get('割当メンバー', '')).split(',')
-                            if any(member.strip() in new_team_members for member in assigned_members if member.strip()):
-                                new_team_assigned += 1
-                        print(f"  新製品チーム対応: {new_team_assigned}件 / 新製品: {new_product_count}件")
+                    # 新製品チーム（H列★）最低1名割当の達成状況
+                    ok_min1 = len(new_product_df[new_product_df['新チーム最低割当'] == 'OK'])
+                    ng_min1 = len(new_product_df[new_product_df['新チーム最低割当'] == 'NG'])
+                    print(f"  新製品チーム(★)最低1名割当: OK {ok_min1}件 / NG {ng_min1}件")
+                    if ng_min1 > 0:
+                        print("  NG品目一覧（品番/納期/割当メンバー）:")
+                        tmp = new_product_df[new_product_df['新チーム最低割当'] == 'NG'][['品番','納期','割当メンバー']].copy()
+                        if '納期' in tmp.columns:
+                            tmp['納期'] = pd.to_datetime(tmp['納期'], errors='coerce').dt.strftime('%m/%d')
+                        print(tmp.to_string(index=False))
 
-            # CSV保存
+            # CSV保存（可視化列も含めて保存）
             formatter.save_to_csv(assignment_df, '検査員割当結果.csv', timestamp=True, decimals=2)
         else:
             print("\n検査員割当結果: データがありません。")
+
+        # スキルベース検査員割当を実行
+        print("\n" + "=" * 80)
+        print("スキルベース検査員割当を実行します...")
+        skill_assignment_df = scheduler.assign_inspectors_with_skill()
+        if not skill_assignment_df.empty:
+            print("\nスキルベース検査員割当結果")
+            print("-" * 60)
+            # 納期は表示用にMM/DDで
+            display_skill_df = skill_assignment_df.copy()
+            if '納期' in display_skill_df.columns:
+                display_skill_df['納期'] = pd.to_datetime(display_skill_df['納期'], errors='coerce').dt.strftime('%m/%d')
+            print(display_skill_df.to_string(index=False))
+            
+            # スキルベース割当の統計情報を表示
+            total_products = len(skill_assignment_df)
+            skill_matched_products = len(skill_assignment_df[skill_assignment_df['スキル情報'] != 'スキル情報なし'])
+            fully_assigned = len(skill_assignment_df[skill_assignment_df['不足人員'] == 0])
+            
+            print(f"\nスキルベース割当統計:")
+            print(f"  対象製品数: {total_products}件")
+            print(f"  スキル対応可能: {skill_matched_products}件 / 全体: {total_products}件")
+            print(f"  完全割当済: {fully_assigned}件 / 全体: {total_products}件")
+            
+            # スキルレベル別の割当状況
+            skill_level_stats = {}
+            for _, row in skill_assignment_df.iterrows():
+                assigned_members = str(row.get('割当メンバー', ''))
+                if assigned_members:
+                    for member in assigned_members.split(','):
+                        member = member.strip()
+                        if 'スキル1' in member:
+                            skill_level_stats['高スキル(1)'] = skill_level_stats.get('高スキル(1)', 0) + 1
+                        elif 'スキル2' in member:
+                            skill_level_stats['中スキル(2)'] = skill_level_stats.get('中スキル(2)', 0) + 1
+                        elif 'スキル3' in member:
+                            skill_level_stats['低スキル(3)'] = skill_level_stats.get('低スキル(3)', 0) + 1
+                        elif '一般' in member:
+                            skill_level_stats['一般割当'] = skill_level_stats.get('一般割当', 0) + 1
+            
+            if skill_level_stats:
+                print(f"  スキルレベル別割当:")
+                for skill_type, count in skill_level_stats.items():
+                    print(f"    {skill_type}: {count}件")
+
+            # CSV保存
+            formatter.save_to_csv(skill_assignment_df, 'スキルベース検査員割当結果.csv', timestamp=True, decimals=2)
+        else:
+            print("\nスキルベース検査員割当結果: データがありません。")
+        
         print("\n" + "=" * 80)
         print("処理が完了しました。")
 
@@ -105,7 +169,20 @@ def run_analysis_with_date(target_date: str = None):
         # 関数・処理の一部
         print("\n検査員割当結果（納期が早い順）")
         print("-" * 60)
-        # 別の処理ブロック
+
+        # 新製品チーム（検査員マスタ H列=『新製品チーム』で★）から最低1名が割り当てられているかを可視化
+        new_team_members = scheduler.get_new_product_team_members()
+        if new_team_members:
+            def _new_team_min1_flag(row):
+                if str(row.get('新製品', '')) == '★':
+                    assigned_members = [m.strip() for m in str(row.get('割当メンバー', '')).split(',') if m.strip()]
+                    return 'OK' if any(m in new_team_members for m in assigned_members) else 'NG'
+                return ''
+            assignment_df['新チーム最低割当'] = assignment_df.apply(_new_team_min1_flag, axis=1)
+        else:
+            assignment_df['新チーム最低割当'] = assignment_df['新製品'].apply(lambda v: '' if str(v) != '★' else 'NG')
+
+        # 別の処理ブロック: 表示用に納期はMM/DD
         display_df = assignment_df.copy()
         if '納期' in display_df.columns:
             display_df['納期'] = pd.to_datetime(display_df['納期'], errors='coerce').dt.strftime('%m/%d')
@@ -122,20 +199,70 @@ def run_analysis_with_date(target_date: str = None):
                 assigned_new_products = len(new_product_df[new_product_df['割当人数'] > 0])
                 print(f"  新製品割当済: {assigned_new_products}件 / 新製品: {new_product_count}件")
                 
-                # 新製品チームメンバーが割り当てられた件数
-                new_team_members = scheduler.get_new_product_team_members()
-                if new_team_members:
-                    new_team_assigned = 0
-                    for _, row in new_product_df.iterrows():
-                        assigned_members = str(row.get('割当メンバー', '')).split(',')
-                        if any(member.strip() in new_team_members for member in assigned_members if member.strip()):
-                            new_team_assigned += 1
-                    print(f"  新製品チーム対応: {new_team_assigned}件 / 新製品: {new_product_count}件")
+                # 新製品チーム（H列★）最低1名割当の達成状況
+                ok_min1 = len(new_product_df[new_product_df['新チーム最低割当'] == 'OK'])
+                ng_min1 = len(new_product_df[new_product_df['新チーム最低割当'] == 'NG'])
+                print(f"  新製品チーム(★)最低1名割当: OK {ok_min1}件 / NG {ng_min1}件")
+                if ng_min1 > 0:
+                    print("  NG品目一覧（品番/納期/割当メンバー）:")
+                    tmp = new_product_df[new_product_df['新チーム最低割当'] == 'NG'][['品番','納期','割当メンバー']].copy()
+                    if '納期' in tmp.columns:
+                        tmp['納期'] = pd.to_datetime(tmp['納期'], errors='coerce').dt.strftime('%m/%d')
+                    print(tmp.to_string(index=False))
 
-        # CSV保存
+        # CSV保存（可視化列も含めて保存）
         formatter.save_to_csv(assignment_df, '検査員割当結果.csv', timestamp=True, decimals=2)
     else:
         print("\n検査員割当結果: データがありません。")
+
+    # スキルベース検査員割当を実行
+    print("\n" + "=" * 80)
+    print("スキルベース検査員割当を実行します...")
+    skill_assignment_df = scheduler.assign_inspectors_with_skill()
+    if not skill_assignment_df.empty:
+        print("\nスキルベース検査員割当結果")
+        print("-" * 60)
+        # 納期は表示用にMM/DDで
+        display_skill_df = skill_assignment_df.copy()
+        if '納期' in display_skill_df.columns:
+            display_skill_df['納期'] = pd.to_datetime(display_skill_df['納期'], errors='coerce').dt.strftime('%m/%d')
+        print(display_skill_df.to_string(index=False))
+        
+        # スキルベース割当の統計情報を表示
+        total_products = len(skill_assignment_df)
+        skill_matched_products = len(skill_assignment_df[skill_assignment_df['スキル情報'] != 'スキル情報なし'])
+        fully_assigned = len(skill_assignment_df[skill_assignment_df['不足人員'] == 0])
+        
+        print(f"\nスキルベース割当統計:")
+        print(f"  対象製品数: {total_products}件")
+        print(f"  スキル対応可能: {skill_matched_products}件 / 全体: {total_products}件")
+        print(f"  完全割当済: {fully_assigned}件 / 全体: {total_products}件")
+        
+        # スキルレベル別の割当状況
+        skill_level_stats = {}
+        for _, row in skill_assignment_df.iterrows():
+            assigned_members = str(row.get('割当メンバー', ''))
+            if assigned_members:
+                for member in assigned_members.split(','):
+                    member = member.strip()
+                    if 'スキル1' in member:
+                        skill_level_stats['高スキル(1)'] = skill_level_stats.get('高スキル(1)', 0) + 1
+                    elif 'スキル2' in member:
+                        skill_level_stats['中スキル(2)'] = skill_level_stats.get('中スキル(2)', 0) + 1
+                    elif 'スキル3' in member:
+                        skill_level_stats['低スキル(3)'] = skill_level_stats.get('低スキル(3)', 0) + 1
+                    elif '一般' in member:
+                        skill_level_stats['一般割当'] = skill_level_stats.get('一般割当', 0) + 1
+        
+        if skill_level_stats:
+            print(f"  スキルレベル別割当:")
+            for skill_type, count in skill_level_stats.items():
+                print(f"    {skill_type}: {count}件")
+
+        # CSV保存
+        formatter.save_to_csv(skill_assignment_df, 'スキルベース検査員割当結果.csv', timestamp=True, decimals=2)
+    else:
+        print("\nスキルベース検査員割当結果: データがありません。")
 
 
 if __name__ == "__main__":
