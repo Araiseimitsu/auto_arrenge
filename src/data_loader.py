@@ -7,6 +7,7 @@ import pandas as pd
 from pathlib import Path
 from typing import Tuple, Optional, Dict
 import logging
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,8 +32,9 @@ class DataLoader:
         Returns:
             Dict[str, Path]: ファイル種別をキーとしたパスの辞書
         """
+        today_str = datetime.now().strftime('%Y%m%d')
         return {
-            "shortage_data": self.data_dir / "出荷不足20250919.xlsx",
+            "shortage_data": self.data_dir / f"出荷不足{today_str}.xlsx",
             "product_master": self.data_dir / "製品マスタ.xlsx",
             "inspector_master": self.data_dir / "検査員マスタ.csv",
             "calendar": self.data_dir / "カレンダー.csv",

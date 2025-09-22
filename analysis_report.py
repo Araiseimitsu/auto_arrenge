@@ -1,8 +1,15 @@
 import pandas as pd
+import numpy as np
+from pathlib import Path
+import datetime
+
+# 本日の日付を取得し、ファイル名を生成
+shortage_filename = f"src/data/出荷不足{datetime.now().strftime('%Y%m%d')}.xlsx"
+master_filename = "src/data/製品マスタ.xlsx"
 
 # データを読み込み
-shortage_df = pd.read_excel('src/data/出荷不足20250919.xlsx', engine='openpyxl')
-master_df = pd.read_excel('src/data/製品マスタ.xlsx', engine='openpyxl')
+shortage_df = pd.read_excel(shortage_filename, engine='openpyxl')
+master_df = pd.read_excel(master_filename, engine='openpyxl')
 
 print("=== 工程番号不一致の原因分析 ===")
 print()
